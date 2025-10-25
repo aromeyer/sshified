@@ -39,6 +39,7 @@ All your target servers need to fullfil the following requirements:
 * sshd server with the same port across your fleet
 * a user (no shell access required; restricting the user via `ForceCommand` in `sshd_config` is recommended)
 * public key authentication (`authorized_keys`)
+* optionnaly, a file to support proxy basic authentication with one line per `user:password` credentials
 
 The server running sshified is supposed to provide a `known_hosts` which contains entries for all possible targets.
 
