@@ -46,8 +46,8 @@ It is recommended that this is managed using some configuration management tool 
 
 ## Run
 ```bash
-$ ./sshified --proxy.listen-addr 127.0.0.1:8888 --ssh.user sshified-test --ssh.key-file conf/id_rsa --ssh.known-hosts-file conf/known_hosts -v
-$ curl --proxy 127.0.0.1:8888 http://example.org:8080/api/example
+$ ./sshified --proxy.listen-addr 127.0.0.1:8888 --proxy.auth-basic basic_auth --ssh.user sshified-test --ssh.key-file conf/id_rsa --ssh.known-hosts-file conf/known_hosts -v
+$ curl --proxy 127.0.0.1:8888 --proxy-user user:password http://example.org:8080/api/example
 ```
 
 In above example, the following will happen:
@@ -56,7 +56,7 @@ In above example, the following will happen:
   * sshified will establish a SSH connection to example.org
   * sshified will forward the HTTP request from curl to example.org using the previously created SSH connection.
   * the HTTP response will be returned in the opposite direction.
-  
+
 If another request is sent to example.org (which may even be to a different port), sshified will re-use the already existing SSH connection.
 In other words: It uses a pooling strategy to minimize connection times and network traffic.
 Should the connection fail, sshified will assume that the SSH tunnel may have been broken in the meantime (e.g. due to timeouts).
