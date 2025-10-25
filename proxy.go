@@ -1,12 +1,15 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"compress/gzip"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -16,16 +19,46 @@ import (
 )
 
 type proxyHandler struct {
-	ssh         *sshTransport
-	enableHTTPS bool
+	ssh            *sshTransport
+	enableHTTPS    bool
+	proxyBasicAuth map[string]interface{}
 }
 
-func NewProxyHandler(ssh *sshTransport, enableHTTPS bool) *proxyHandler {
-	return &proxyHandler{ssh: ssh, enableHTTPS: enableHTTPS}
+func NewProxyHandler(ssh *sshTransport, enableHTTPS bool, proxyBasicAuthFilePath *string) (*proxyHandler, error) {
+	proxyBasicAuth, err := makeProxyBasicAuth(proxyBasicAuthFilePath)
+	if err != nil {
+		return nil, fmt.Errorf("unable to read Proxy Authentication file %s", *proxyBasicAuthFilePath)
+	}
+
+	return &proxyHandler{ssh: ssh, enableHTTPS: enableHTTPS, proxyBasicAuth: proxyBasicAuth}, nil
+}
+
+func makeProxyBasicAuth(proxyBasicAuthFilePath *string) (map[string]interface{}, error) {
+	if *proxyBasicAuthFilePath == "" { // Not proxy basic authentication file defined
+		return nil, nil
+	}
+
+	authBase64 := map[string]interface{}{}
+
+	f, err := os.Open(*proxyBasicAuthFilePath)
+	if err != nil {
+		return authBase64, fmt.Errorf("unable to open Proxy Authentication file %s", *proxyBasicAuthFilePath)
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		auth := scanner.Text()
+		if auth != "" {
+			authBase64[base64.StdEncoding.EncodeToString([]byte(auth))] = nil
+		}
+	}
+
+	return authBase64, nil
 }
 
 func (ph *proxyHandler) ServeHTTP(rw http.ResponseWriter, origReq *http.Request) {
-	proxyReq := NewProxyRequest(rw, origReq, ph.ssh.TransportRegular, ph.ssh.TransportTLSSkipVerify, ph.enableHTTPS)
+	proxyReq := NewProxyRequest(rw, origReq, ph.ssh.TransportRegular, ph.ssh.TransportTLSSkipVerify, ph.enableHTTPS, ph.proxyBasicAuth)
 	err := proxyReq.Handle()
 	if err != nil {
 		log.WithFields(log.Fields{
@@ -48,22 +81,49 @@ type proxyRequest struct {
 	upstreamRequest         *http.Request
 	enableHTTPS             bool
 	httpsInsecureSkipVerify bool
+	proxyBasicAuth          map[string]interface{}
 }
 
-func NewProxyRequest(rw http.ResponseWriter, origReq *http.Request, transportRegular, transportTLSSkipVerify http.RoundTripper, enableHTTPS bool) *proxyRequest {
+func NewProxyRequest(rw http.ResponseWriter, origReq *http.Request, transportRegular, transportTLSSkipVerify http.RoundTripper, enableHTTPS bool, proxyBasicAuth map[string]interface{}) *proxyRequest {
 	return &proxyRequest{
 		rw:                     rw,
 		origReq:                origReq,
 		transportRegular:       transportRegular,
 		transportTLSSkipVerify: transportTLSSkipVerify,
 		enableHTTPS:            enableHTTPS,
+		proxyBasicAuth:         proxyBasicAuth,
 	}
+}
+
+func (pr *proxyRequest) ProxyAuthentication() error {
+	const BasicAuthPrefix string = "Basic"
+	if pr.proxyBasicAuth == nil { // basic authentication not configured
+		return nil
+	}
+
+	part := strings.Split(pr.origReq.Header.Get("Proxy-Authorization"), " ")
+	if len(part) != 2 || !strings.EqualFold(part[0], BasicAuthPrefix) {
+		return fmt.Errorf("user authentication refused")
+	}
+
+	if _, ok := pr.proxyBasicAuth[part[1]]; !ok {
+		return fmt.Errorf("user authentication refused")
+	}
+
+	return nil
 }
 
 func (pr *proxyRequest) Handle() error {
 	metricRequestsTotal.Inc()
 	timer := prometheus.NewTimer(metricRequestDuration)
 	defer timer.ObserveDuration()
+
+	err := pr.ProxyAuthentication()
+	if err != nil {
+		metricRequestsFailedTotal.Inc()
+		return err
+	}
+
 	pr.prepareHTTPSURL()
 	pr.buildURL()
 	log.WithFields(log.Fields{
@@ -71,7 +131,7 @@ func (pr *proxyRequest) Handle() error {
 		"url":    pr.requestedURL,
 		"proto":  pr.origReq.Proto}).Trace("handling request")
 
-	err := pr.buildRequest()
+	err = pr.buildRequest()
 	if err != nil {
 		metricRequestsFailedTotal.Inc()
 		return err
