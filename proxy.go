@@ -141,6 +141,7 @@ func (pr *proxyRequest) Handle() error {
 
 	err := pr.ProxyAuthentication()
 	if err != nil {
+		pr.rw.WriteHeader(http.StatusUnauthorized)
 		metricRequestsFailedTotal.Inc()
 		return err
 	}
