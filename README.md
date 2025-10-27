@@ -47,7 +47,7 @@ It is recommended that this is managed using some configuration management tool 
 
 ## Run
 ```bash
-$ ./sshified --proxy.listen-addr 127.0.0.1:8888 --proxy.auth-basic basic_auth --ssh.user sshified-test --ssh.key-file conf/id_rsa --ssh.known-hosts-file conf/known_hosts -v
+$ ./sshified --proxy.listen-addr 127.0.0.1:8888 --proxy.auth-basic conf/basic_auth --ssh.user sshified-test --ssh.key-file conf/id_rsa --ssh.known-hosts-file conf/known_hosts -v
 $ curl --proxy 127.0.0.1:8888 --proxy-user user:password http://example.org:8080/api/example
 ```
 
