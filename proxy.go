@@ -122,12 +122,14 @@ func (pr *proxyRequest) ProxyAuthentication() error {
 
 	part := strings.Split(pr.origReq.Header.Get("Proxy-Authorization"), " ")
 	if len(part) != 2 || !strings.EqualFold(part[0], BasicAuthPrefix) {
+		pr.rw.WriteHeader(http.StatusUnauthorized)
 		return fmt.Errorf("user authentication refused")
 	}
 
 	pr.mu.RLock()
 	defer pr.mu.RUnlock()
 	if _, ok := pr.proxyBasicAuth[part[1]]; !ok {
+		pr.rw.WriteHeader(http.StatusForbidden)
 		return fmt.Errorf("user authentication refused")
 	}
 
@@ -141,7 +143,6 @@ func (pr *proxyRequest) Handle() error {
 
 	err := pr.ProxyAuthentication()
 	if err != nil {
-		pr.rw.WriteHeader(http.StatusUnauthorized)
 		metricRequestsFailedTotal.Inc()
 		return err
 	}
