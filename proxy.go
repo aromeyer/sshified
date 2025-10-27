@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/prometheus/model/labels"
@@ -19,18 +20,35 @@ import (
 )
 
 type proxyHandler struct {
-	ssh            *sshTransport
-	enableHTTPS    bool
-	proxyBasicAuth map[string]interface{}
+	ssh                    *sshTransport
+	enableHTTPS            bool
+	proxyBasicAuthFilePath *string
+	proxyBasicAuth         map[string]interface{}
+	mu                     sync.RWMutex
 }
 
 func NewProxyHandler(ssh *sshTransport, enableHTTPS bool, proxyBasicAuthFilePath *string) (*proxyHandler, error) {
-	proxyBasicAuth, err := makeProxyBasicAuth(proxyBasicAuthFilePath)
+	ph := &proxyHandler{ssh: ssh, enableHTTPS: enableHTTPS, proxyBasicAuthFilePath: proxyBasicAuthFilePath}
+
+	err := ph.LoadFiles()
 	if err != nil {
 		return nil, fmt.Errorf("unable to read Proxy Authentication file %s", *proxyBasicAuthFilePath)
 	}
 
-	return &proxyHandler{ssh: ssh, enableHTTPS: enableHTTPS, proxyBasicAuth: proxyBasicAuth}, nil
+	return ph, nil
+}
+
+func (ph *proxyHandler) LoadFiles() error {
+	proxyBasicAuth, err := makeProxyBasicAuth(ph.proxyBasicAuthFilePath)
+	if err != nil {
+		return fmt.Errorf("failed to load proxyBasicAuth file %s: %s", *proxyBasicAuthFilePath, err)
+	}
+
+	ph.mu.Lock()
+	defer ph.mu.Unlock()
+	ph.proxyBasicAuth = proxyBasicAuth
+
+	return nil
 }
 
 func makeProxyBasicAuth(proxyBasicAuthFilePath *string) (map[string]interface{}, error) {
@@ -82,6 +100,7 @@ type proxyRequest struct {
 	enableHTTPS             bool
 	httpsInsecureSkipVerify bool
 	proxyBasicAuth          map[string]interface{}
+	mu                      sync.RWMutex
 }
 
 func NewProxyRequest(rw http.ResponseWriter, origReq *http.Request, transportRegular, transportTLSSkipVerify http.RoundTripper, enableHTTPS bool, proxyBasicAuth map[string]interface{}) *proxyRequest {
@@ -106,6 +125,8 @@ func (pr *proxyRequest) ProxyAuthentication() error {
 		return fmt.Errorf("user authentication refused")
 	}
 
+	pr.mu.RLock()
+	defer pr.mu.RUnlock()
 	if _, ok := pr.proxyBasicAuth[part[1]]; !ok {
 		return fmt.Errorf("user authentication refused")
 	}

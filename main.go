@@ -78,6 +78,14 @@ func main() {
 			} else {
 				log.WithFields(log.Fields{"err": err}).Error("reload failed")
 			}
+
+			log.Info("got SIGHUP, reloading proxy authentication file")
+			err = ph.LoadFiles()
+			if err == nil {
+				log.Info("successfully reloaded")
+			} else {
+				log.WithFields(log.Fields{"err": err}).Error("proxy authentication file reload failed")
+			}
 		}
 	}()
 	log.Fatal(s.ListenAndServe())
