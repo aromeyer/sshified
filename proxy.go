@@ -116,6 +116,9 @@ func NewProxyRequest(rw http.ResponseWriter, origReq *http.Request, transportReg
 
 func (pr *proxyRequest) ProxyAuthentication() error {
 	const BasicAuthPrefix string = "Basic"
+
+	pr.mu.RLock()
+	defer pr.mu.RUnlock()
 	if pr.proxyBasicAuth == nil { // basic authentication not configured
 		return nil
 	}
@@ -126,8 +129,6 @@ func (pr *proxyRequest) ProxyAuthentication() error {
 		return fmt.Errorf("user authentication refused (missing or bad format)")
 	}
 
-	pr.mu.RLock()
-	defer pr.mu.RUnlock()
 	if _, ok := pr.proxyBasicAuth[part[1]]; !ok {
 		pr.rw.WriteHeader(http.StatusForbidden)
 		return fmt.Errorf("user authentication refused")
