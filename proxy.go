@@ -109,15 +109,20 @@ type proxyRequest struct {
 }
 
 func NewProxyRequest(rw http.ResponseWriter, origReq *http.Request, transportRegular, transportTLSSkipVerify http.RoundTripper, enableHTTPS bool, proxyBasicAuth map[string]interface{}, mu *sync.RWMutex) *proxyRequest {
-	return &proxyRequest{
+	pr := &proxyRequest{
 		rw:                     rw,
 		origReq:                origReq,
 		transportRegular:       transportRegular,
 		transportTLSSkipVerify: transportTLSSkipVerify,
 		enableHTTPS:            enableHTTPS,
-		proxyBasicAuth:         proxyBasicAuth, // Shared from proxyHandler (written from proxyHandler, read from proxyRequest)
-		mu:                     mu,             // Share the same mutex instance
+		mu:                     mu, // Share the same mutex instance
 	}
+
+	mu.RLock()
+	defer mu.RUnlock()
+	pr.proxyBasicAuth = proxyBasicAuth // Safely assigned map reference
+
+	return pr
 }
 
 func (pr *proxyRequest) ProxyAuthentication() error {
