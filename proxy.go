@@ -23,8 +23,8 @@ type proxyHandler struct {
 	ssh                *sshTransport
 	enableHTTPS        bool
 	proxyBasicAuthFile *string
-	proxyBasicAuth     map[string]interface{}
-	mu                 *sync.RWMutex // Changed to pointer to share with proxyRequest
+	proxyBasicAuth     map[string]interface{} // Shared with proxyRequest (written from proxyHandler, read from proxyRequest)
+	mu                 *sync.RWMutex          // Changed to pointer to share with proxyRequest
 }
 
 func NewProxyHandler(ssh *sshTransport, enableHTTPS bool, proxyBasicAuthFile *string) (*proxyHandler, error) {
@@ -104,8 +104,8 @@ type proxyRequest struct {
 	upstreamRequest         *http.Request
 	enableHTTPS             bool
 	httpsInsecureSkipVerify bool
-	proxyBasicAuth          map[string]interface{}
-	mu                      *sync.RWMutex // Changed to pointer to share with proxyHandler
+	proxyBasicAuth          map[string]interface{} // Shared from proxyHandler (written from proxyHandler, read from proxyRequest)
+	mu                      *sync.RWMutex          // Changed to pointer to share with proxyHandler
 }
 
 func NewProxyRequest(rw http.ResponseWriter, origReq *http.Request, transportRegular, transportTLSSkipVerify http.RoundTripper, enableHTTPS bool, proxyBasicAuth map[string]interface{}, mu *sync.RWMutex) *proxyRequest {
@@ -115,8 +115,8 @@ func NewProxyRequest(rw http.ResponseWriter, origReq *http.Request, transportReg
 		transportRegular:       transportRegular,
 		transportTLSSkipVerify: transportTLSSkipVerify,
 		enableHTTPS:            enableHTTPS,
-		proxyBasicAuth:         proxyBasicAuth,
-		mu:                     mu, // Share the same mutex instance
+		proxyBasicAuth:         proxyBasicAuth, // Shared from proxyHandler (written from proxyHandler, read from proxyRequest)
+		mu:                     mu,             // Share the same mutex instance
 	}
 }
 
