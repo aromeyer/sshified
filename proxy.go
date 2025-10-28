@@ -24,11 +24,16 @@ type proxyHandler struct {
 	enableHTTPS        bool
 	proxyBasicAuthFile *string
 	proxyBasicAuth     map[string]interface{}
-	mu                 sync.RWMutex
+	mu                 *sync.RWMutex // Changed to pointer to share with proxyRequest
 }
 
 func NewProxyHandler(ssh *sshTransport, enableHTTPS bool, proxyBasicAuthFile *string) (*proxyHandler, error) {
-	ph := &proxyHandler{ssh: ssh, enableHTTPS: enableHTTPS, proxyBasicAuthFile: proxyBasicAuthFile}
+	ph := &proxyHandler{
+		ssh:                ssh,
+		enableHTTPS:        enableHTTPS,
+		proxyBasicAuthFile: proxyBasicAuthFile,
+		mu:                 &sync.RWMutex{}, // Initialize the shared mutex
+	}
 
 	err := ph.LoadFiles()
 	if err != nil {
@@ -76,7 +81,7 @@ func makeProxyBasicAuth(proxyBasicAuthFile *string) (map[string]interface{}, err
 }
 
 func (ph *proxyHandler) ServeHTTP(rw http.ResponseWriter, origReq *http.Request) {
-	proxyReq := NewProxyRequest(rw, origReq, ph.ssh.TransportRegular, ph.ssh.TransportTLSSkipVerify, ph.enableHTTPS, ph.proxyBasicAuth)
+	proxyReq := NewProxyRequest(rw, origReq, ph.ssh.TransportRegular, ph.ssh.TransportTLSSkipVerify, ph.enableHTTPS, ph.proxyBasicAuth, ph.mu)
 	err := proxyReq.Handle()
 	if err != nil {
 		log.WithFields(log.Fields{
@@ -100,10 +105,10 @@ type proxyRequest struct {
 	enableHTTPS             bool
 	httpsInsecureSkipVerify bool
 	proxyBasicAuth          map[string]interface{}
-	mu                      sync.RWMutex
+	mu                      *sync.RWMutex // Changed to pointer to share with proxyHandler
 }
 
-func NewProxyRequest(rw http.ResponseWriter, origReq *http.Request, transportRegular, transportTLSSkipVerify http.RoundTripper, enableHTTPS bool, proxyBasicAuth map[string]interface{}) *proxyRequest {
+func NewProxyRequest(rw http.ResponseWriter, origReq *http.Request, transportRegular, transportTLSSkipVerify http.RoundTripper, enableHTTPS bool, proxyBasicAuth map[string]interface{}, mu *sync.RWMutex) *proxyRequest {
 	return &proxyRequest{
 		rw:                     rw,
 		origReq:                origReq,
@@ -111,6 +116,7 @@ func NewProxyRequest(rw http.ResponseWriter, origReq *http.Request, transportReg
 		transportTLSSkipVerify: transportTLSSkipVerify,
 		enableHTTPS:            enableHTTPS,
 		proxyBasicAuth:         proxyBasicAuth,
+		mu:                     mu, // Share the same mutex instance
 	}
 }
 
