@@ -20,28 +20,28 @@ import (
 )
 
 type proxyHandler struct {
-	ssh                    *sshTransport
-	enableHTTPS            bool
-	proxyBasicAuthFilePath *string
-	proxyBasicAuth         map[string]interface{}
-	mu                     sync.RWMutex
+	ssh                *sshTransport
+	enableHTTPS        bool
+	proxyBasicAuthFile *string
+	proxyBasicAuth     map[string]interface{}
+	mu                 sync.RWMutex
 }
 
-func NewProxyHandler(ssh *sshTransport, enableHTTPS bool, proxyBasicAuthFilePath *string) (*proxyHandler, error) {
-	ph := &proxyHandler{ssh: ssh, enableHTTPS: enableHTTPS, proxyBasicAuthFilePath: proxyBasicAuthFilePath}
+func NewProxyHandler(ssh *sshTransport, enableHTTPS bool, proxyBasicAuthFile *string) (*proxyHandler, error) {
+	ph := &proxyHandler{ssh: ssh, enableHTTPS: enableHTTPS, proxyBasicAuthFile: proxyBasicAuthFile}
 
 	err := ph.LoadFiles()
 	if err != nil {
-		return nil, fmt.Errorf("unable to read Proxy Authentication file %s", *proxyBasicAuthFilePath)
+		return nil, fmt.Errorf("unable to read Proxy Authentication file %s", *proxyBasicAuthFile)
 	}
 
 	return ph, nil
 }
 
 func (ph *proxyHandler) LoadFiles() error {
-	proxyBasicAuth, err := makeProxyBasicAuth(ph.proxyBasicAuthFilePath)
+	proxyBasicAuth, err := makeProxyBasicAuth(ph.proxyBasicAuthFile)
 	if err != nil {
-		return fmt.Errorf("failed to load proxyBasicAuth file %s: %s", *proxyBasicAuthFilePath, err)
+		return fmt.Errorf("failed to load proxyBasicAuth file %s: %s", *proxyBasicAuthFile, err)
 	}
 
 	ph.mu.Lock()
@@ -51,16 +51,16 @@ func (ph *proxyHandler) LoadFiles() error {
 	return nil
 }
 
-func makeProxyBasicAuth(proxyBasicAuthFilePath *string) (map[string]interface{}, error) {
-	if *proxyBasicAuthFilePath == "" { // Not proxy basic authentication file defined
+func makeProxyBasicAuth(proxyBasicAuthFile *string) (map[string]interface{}, error) {
+	if *proxyBasicAuthFile == "" { // Not proxy basic authentication file defined
 		return nil, nil
 	}
 
 	authBase64 := map[string]interface{}{}
 
-	f, err := os.Open(*proxyBasicAuthFilePath)
+	f, err := os.Open(*proxyBasicAuthFile)
 	if err != nil {
-		return authBase64, fmt.Errorf("unable to open Proxy Authentication file %s", *proxyBasicAuthFilePath)
+		return authBase64, fmt.Errorf("unable to open Proxy Authentication file %s", *proxyBasicAuthFile)
 	}
 	defer f.Close()
 
@@ -123,7 +123,7 @@ func (pr *proxyRequest) ProxyAuthentication() error {
 	part := strings.Split(pr.origReq.Header.Get("Proxy-Authorization"), " ")
 	if len(part) != 2 || !strings.EqualFold(part[0], BasicAuthPrefix) {
 		pr.rw.WriteHeader(http.StatusUnauthorized)
-		return fmt.Errorf("user authentication refused")
+		return fmt.Errorf("user authentication refused (missing or bad format)")
 	}
 
 	pr.mu.RLock()
