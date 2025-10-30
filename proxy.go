@@ -19,53 +19,62 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+type ProxyAuth struct {
+	basicAuthFile *string
+	basicAuth     map[string]interface{}
+	mu            sync.RWMutex
+}
+
 type proxyHandler struct {
-	ssh                *sshTransport
-	enableHTTPS        bool
-	proxyBasicAuthFile *string
-	proxyBasicAuth     map[string]interface{} // Shared with proxyRequest (written from proxyHandler, read from proxyRequest)
-	mu                 *sync.RWMutex          // Changed to pointer to share with proxyRequest
+	ssh         *sshTransport
+	enableHTTPS bool
+	proxyAuth   ProxyAuth
 }
 
 func NewProxyHandler(ssh *sshTransport, enableHTTPS bool, proxyBasicAuthFile *string) (*proxyHandler, error) {
 	ph := &proxyHandler{
-		ssh:                ssh,
-		enableHTTPS:        enableHTTPS,
-		proxyBasicAuthFile: proxyBasicAuthFile,
-		mu:                 &sync.RWMutex{}, // Initialize the shared mutex
+		ssh:         ssh,
+		enableHTTPS: enableHTTPS,
+		proxyAuth: ProxyAuth{
+			basicAuthFile: proxyBasicAuthFile,
+			mu:            sync.RWMutex{}, // Initialize the shared mutex
+		},
 	}
 
 	err := ph.LoadFiles()
 	if err != nil {
-		return nil, fmt.Errorf("unable to read Proxy Authentication file %s", *proxyBasicAuthFile)
+		return nil, err
 	}
 
 	return ph, nil
 }
 
 func (ph *proxyHandler) LoadFiles() error {
-	proxyBasicAuth, err := makeProxyBasicAuth(ph.proxyBasicAuthFile)
+	basicAuth, err := makebasicAuth(ph.proxyAuth.basicAuthFile)
 	if err != nil {
-		return fmt.Errorf("failed to load proxyBasicAuth file %s: %s", *proxyBasicAuthFile, err)
+		return fmt.Errorf("failed to load basicAuth file %s: %s", *ph.proxyAuth.basicAuthFile, err)
 	}
 
-	ph.mu.Lock()
-	defer ph.mu.Unlock()
-	ph.proxyBasicAuth = proxyBasicAuth
+	ph.proxyAuth.mu.Lock()
+	defer ph.proxyAuth.mu.Unlock()
+	ph.proxyAuth.basicAuth = basicAuth
 
 	return nil
 }
 
-func makeProxyBasicAuth(proxyBasicAuthFile *string) (map[string]interface{}, error) {
-	if *proxyBasicAuthFile == "" { // Not proxy basic authentication file defined
+func makebasicAuth(basicAuthFile *string) (map[string]interface{}, error) {
+	if basicAuthFile == nil { // avoid race condition
+		return nil, nil
+	}
+	if *basicAuthFile == "" { // No proxy basic authentication file defined
 		return nil, nil
 	}
 
 	authBase64 := map[string]interface{}{}
 
-	f, err := os.Open(*proxyBasicAuthFile)
+	f, err := os.Open(*basicAuthFile)
 	if err != nil {
-		return authBase64, fmt.Errorf("unable to open Proxy Authentication file %s", *proxyBasicAuthFile)
+		return authBase64, fmt.Errorf("unable to open Proxy Authentication file %s", *basicAuthFile)
 	}
 	defer f.Close()
 
@@ -81,7 +90,7 @@ func makeProxyBasicAuth(proxyBasicAuthFile *string) (map[string]interface{}, err
 }
 
 func (ph *proxyHandler) ServeHTTP(rw http.ResponseWriter, origReq *http.Request) {
-	proxyReq := NewProxyRequest(rw, origReq, ph.ssh.TransportRegular, ph.ssh.TransportTLSSkipVerify, ph.enableHTTPS, ph.proxyBasicAuth, ph.mu)
+	proxyReq := NewProxyRequest(rw, origReq, ph.ssh.TransportRegular, ph.ssh.TransportTLSSkipVerify, ph.enableHTTPS, &ph.proxyAuth)
 	err := proxyReq.Handle()
 	if err != nil {
 		log.WithFields(log.Fields{
@@ -104,23 +113,18 @@ type proxyRequest struct {
 	upstreamRequest         *http.Request
 	enableHTTPS             bool
 	httpsInsecureSkipVerify bool
-	proxyBasicAuth          map[string]interface{} // Shared from proxyHandler (written from proxyHandler, read from proxyRequest)
-	mu                      *sync.RWMutex          // Changed to pointer to share with proxyHandler
+	proxyAuth               *ProxyAuth // Shared from proxyHandler
 }
 
-func NewProxyRequest(rw http.ResponseWriter, origReq *http.Request, transportRegular, transportTLSSkipVerify http.RoundTripper, enableHTTPS bool, proxyBasicAuth map[string]interface{}, mu *sync.RWMutex) *proxyRequest {
+func NewProxyRequest(rw http.ResponseWriter, origReq *http.Request, transportRegular, transportTLSSkipVerify http.RoundTripper, enableHTTPS bool, proxyAuth *ProxyAuth) *proxyRequest {
 	pr := &proxyRequest{
 		rw:                     rw,
 		origReq:                origReq,
 		transportRegular:       transportRegular,
 		transportTLSSkipVerify: transportTLSSkipVerify,
 		enableHTTPS:            enableHTTPS,
-		mu:                     mu, // Share the same mutex instance
+		proxyAuth:              proxyAuth, // Share the same instance
 	}
-
-	mu.RLock()
-	defer mu.RUnlock()
-	pr.proxyBasicAuth = proxyBasicAuth // Safely assigned map reference
 
 	return pr
 }
@@ -128,9 +132,9 @@ func NewProxyRequest(rw http.ResponseWriter, origReq *http.Request, transportReg
 func (pr *proxyRequest) ProxyAuthentication() error {
 	const BasicAuthPrefix string = "Basic"
 
-	pr.mu.RLock()
-	defer pr.mu.RUnlock()
-	if pr.proxyBasicAuth == nil { // basic authentication not configured
+	pr.proxyAuth.mu.RLock()
+	defer pr.proxyAuth.mu.RUnlock()
+	if pr.proxyAuth.basicAuth == nil { // basic authentication not configured
 		return nil
 	}
 
@@ -140,7 +144,7 @@ func (pr *proxyRequest) ProxyAuthentication() error {
 		return fmt.Errorf("user authentication refused (missing or bad format)")
 	}
 
-	if _, ok := pr.proxyBasicAuth[part[1]]; !ok {
+	if _, ok := pr.proxyAuth.basicAuth[part[1]]; !ok {
 		pr.rw.WriteHeader(http.StatusForbidden)
 		return fmt.Errorf("user authentication refused")
 	}
