@@ -1,13 +1,17 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"compress/gzip"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
+	"sync"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/prometheus/model/labels"
@@ -15,17 +19,78 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+type ProxyAuth struct {
+	basicAuthFile *string
+	basicAuth     map[string]interface{}
+	mu            sync.RWMutex
+}
+
 type proxyHandler struct {
 	ssh         *sshTransport
 	enableHTTPS bool
+	proxyAuth   ProxyAuth
 }
 
-func NewProxyHandler(ssh *sshTransport, enableHTTPS bool) *proxyHandler {
-	return &proxyHandler{ssh: ssh, enableHTTPS: enableHTTPS}
+func NewProxyHandler(ssh *sshTransport, enableHTTPS bool, proxyBasicAuthFile *string) (*proxyHandler, error) {
+	ph := &proxyHandler{
+		ssh:         ssh,
+		enableHTTPS: enableHTTPS,
+		proxyAuth: ProxyAuth{
+			basicAuthFile: proxyBasicAuthFile,
+			mu:            sync.RWMutex{}, // Initialize the shared mutex
+		},
+	}
+
+	err := ph.LoadFiles()
+	if err != nil {
+		return nil, err
+	}
+
+	return ph, nil
+}
+
+func (ph *proxyHandler) LoadFiles() error {
+	basicAuth, err := makebasicAuth(ph.proxyAuth.basicAuthFile)
+	if err != nil {
+		return fmt.Errorf("failed to load basicAuth file %s: %s", *ph.proxyAuth.basicAuthFile, err)
+	}
+
+	ph.proxyAuth.mu.Lock()
+	defer ph.proxyAuth.mu.Unlock()
+	ph.proxyAuth.basicAuth = basicAuth
+
+	return nil
+}
+
+func makebasicAuth(basicAuthFile *string) (map[string]interface{}, error) {
+	if basicAuthFile == nil { // avoid race condition
+		return nil, nil
+	}
+	if *basicAuthFile == "" { // No proxy basic authentication file defined
+		return nil, nil
+	}
+
+	authBase64 := map[string]interface{}{}
+
+	f, err := os.Open(*basicAuthFile)
+	if err != nil {
+		return authBase64, fmt.Errorf("unable to open Proxy Authentication file %s", *basicAuthFile)
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		auth := scanner.Text()
+		if auth != "" {
+			authBase64[base64.StdEncoding.EncodeToString([]byte(auth))] = nil
+		}
+	}
+
+	return authBase64, nil
 }
 
 func (ph *proxyHandler) ServeHTTP(rw http.ResponseWriter, origReq *http.Request) {
-	proxyReq := NewProxyRequest(rw, origReq, ph.ssh.TransportRegular, ph.ssh.TransportTLSSkipVerify, ph.enableHTTPS)
+	proxyReq := NewProxyRequest(rw, origReq, ph.ssh.TransportRegular, ph.ssh.TransportTLSSkipVerify, ph.enableHTTPS, &ph.proxyAuth)
 	err := proxyReq.Handle()
 	if err != nil {
 		log.WithFields(log.Fields{
@@ -48,22 +113,56 @@ type proxyRequest struct {
 	upstreamRequest         *http.Request
 	enableHTTPS             bool
 	httpsInsecureSkipVerify bool
+	proxyAuth               *ProxyAuth // Shared from proxyHandler
 }
 
-func NewProxyRequest(rw http.ResponseWriter, origReq *http.Request, transportRegular, transportTLSSkipVerify http.RoundTripper, enableHTTPS bool) *proxyRequest {
-	return &proxyRequest{
+func NewProxyRequest(rw http.ResponseWriter, origReq *http.Request, transportRegular, transportTLSSkipVerify http.RoundTripper, enableHTTPS bool, proxyAuth *ProxyAuth) *proxyRequest {
+	pr := &proxyRequest{
 		rw:                     rw,
 		origReq:                origReq,
 		transportRegular:       transportRegular,
 		transportTLSSkipVerify: transportTLSSkipVerify,
 		enableHTTPS:            enableHTTPS,
+		proxyAuth:              proxyAuth, // Share the same instance
 	}
+
+	return pr
+}
+
+func (pr *proxyRequest) ProxyAuthentication() error {
+	const BasicAuthPrefix string = "Basic"
+
+	pr.proxyAuth.mu.RLock()
+	defer pr.proxyAuth.mu.RUnlock()
+	if pr.proxyAuth.basicAuth == nil { // basic authentication not configured
+		return nil
+	}
+
+	part := strings.Split(pr.origReq.Header.Get("Proxy-Authorization"), " ")
+	if len(part) != 2 || !strings.EqualFold(part[0], BasicAuthPrefix) {
+		pr.rw.WriteHeader(http.StatusUnauthorized)
+		return fmt.Errorf("user authentication refused (missing or bad format)")
+	}
+
+	if _, ok := pr.proxyAuth.basicAuth[part[1]]; !ok {
+		pr.rw.WriteHeader(http.StatusForbidden)
+		return fmt.Errorf("user authentication refused")
+	}
+
+	return nil
 }
 
 func (pr *proxyRequest) Handle() error {
 	metricRequestsTotal.Inc()
 	timer := prometheus.NewTimer(metricRequestDuration)
 	defer timer.ObserveDuration()
+
+	err := pr.ProxyAuthentication()
+	if err != nil {
+		metricRequestsFailedTotal.Inc()
+		return err
+	}
+
 	pr.prepareHTTPSURL()
 	pr.buildURL()
 	log.WithFields(log.Fields{
@@ -71,7 +170,7 @@ func (pr *proxyRequest) Handle() error {
 		"url":    pr.requestedURL,
 		"proto":  pr.origReq.Proto}).Trace("handling request")
 
-	err := pr.buildRequest()
+	err = pr.buildRequest()
 	if err != nil {
 		metricRequestsFailedTotal.Inc()
 		return err

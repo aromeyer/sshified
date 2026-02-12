@@ -15,6 +15,7 @@ var (
 	verbose                     = kingpin.Flag("verbose", "Verbose mode.").Short('v').Bool()
 	trace                       = kingpin.Flag("trace", "Trace mode.").Bool()
 	proxyAddr                   = kingpin.Flag("proxy.listen-addr", "address the proxy will listen on").Required().String()
+	proxyBasicAuthFile          = kingpin.Flag("proxy.auth-basic", "proxy basic authentication file path").String()
 	nextProxyAddr               = kingpin.Flag("next-proxy.addr", "optional address of another http proxy when cascading usage is required").String()
 	metricsAddr                 = kingpin.Flag("metrics.listen-addr", "adress the service will listen on for metrics request about itself").String()
 	sshUser                     = kingpin.Flag("ssh.user", "username used for connecting via ssh").Required().String()
@@ -50,7 +51,12 @@ func main() {
 	}
 	// only enable HTTPS support at the last sshified instance in a cascading setup:
 	enableHTTPS := *nextProxyAddr == ""
-	ph := NewProxyHandler(sshTransport, enableHTTPS)
+
+	ph, err := NewProxyHandler(sshTransport, enableHTTPS, proxyBasicAuthFile)
+	if err != nil {
+		log.WithFields(log.Fields{"err": err}).Fatal("failed to read proxy basic authentication file")
+	}
+
 	s := &http.Server{
 		Addr:           *proxyAddr,
 		Handler:        ph,
@@ -64,13 +70,21 @@ func main() {
 	signal.Notify(c, syscall.SIGHUP)
 
 	go func() {
-		for _ = range c {
+		for range c {
 			log.Info("got SIGHUP, reloading known hosts and key file")
 			err := sshTransport.LoadFiles()
 			if err == nil {
 				log.Info("successfully reloaded")
 			} else {
 				log.WithFields(log.Fields{"err": err}).Error("reload failed")
+			}
+
+			log.Info("got SIGHUP, reloading proxy authentication file")
+			err = ph.LoadFiles()
+			if err == nil {
+				log.Info("successfully reloaded")
+			} else {
+				log.WithFields(log.Fields{"err": err}).Error("proxy authentication file reload failed")
 			}
 		}
 	}()
